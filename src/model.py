@@ -1076,12 +1076,23 @@ def run_training(config: TrainConfig) -> None:
     print("Best validation metrics:", best_metrics)
 
 
+def default_model_output_path() -> Path:
+    """Build a unique checkpoint path using current date and time."""
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+    return Path("models") / f"adlm_bilstm_crf_{timestamp}.pt"
+
+
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(
         description="ADLM-style bug duplicate detection model (BiLSTM + CRF + optional Dragonfly tuning)."
     )
     parser.add_argument("--data_path", type=Path, default=Path("dataset") / "corpus_features.csv")
-    parser.add_argument("--model_out", type=Path, default=Path("models") / "adlm_bilstm_crf.pt")
+    parser.add_argument(
+        "--model_out",
+        type=Path,
+        default=None,
+        help="Optional checkpoint path. If omitted, a timestamped filename is generated automatically.",
+    )
     parser.add_argument("--label_column", type=str, default=None)
 
     parser.add_argument("--max_vocab_size", type=int, default=15000)
@@ -1096,16 +1107,16 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--val_size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
-
     parser.add_argument("--use_dragonfly", action="store_true")
     parser.add_argument("--dragonfly_population", type=int, default=5)
     parser.add_argument("--dragonfly_iterations", type=int, default=2)
     parser.add_argument("--dragonfly_inner_epochs", type=int, default=2)
 
     args = parser.parse_args()
+    resolved_model_out = args.model_out if args.model_out is not None else default_model_output_path()
     return TrainConfig(
         data_path=args.data_path,
-        model_out=args.model_out,
+        model_out=resolved_model_out,
         label_column=args.label_column,
         max_vocab_size=args.max_vocab_size,
         max_seq_len=args.max_seq_len,
