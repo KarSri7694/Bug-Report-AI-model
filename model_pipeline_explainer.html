@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADLM Pipeline Atlas | src/model.py</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4eadc;
+      --bg-soft: #fbf7ef;
+      --card: rgba(255, 252, 247, 0.88);
+      --ink: #161a23;
+      --ink-soft: #4e5869;
+      --line: #d8c9b4;
+      --accent-strong: #cc4b1c;
+      --accent-cool: #137274;
+      --accent-warm: #f09a22;
+      --accent-deep: #2e3658;
+      --shadow: 0 16px 44px rgba(79, 47, 6, 0.12);
+      --radius-xl: 24px;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 10%, rgba(240, 154, 34, 0.18) 0%, transparent 30%),
+        radial-gradient(circle at 92% 12%, rgba(19, 114, 116, 0.16) 0%, transparent 36%),
+        radial-gradient(circle at 24% 92%, rgba(46, 54, 88, 0.12) 0%, transparent 34%),
+        linear-gradient(140deg, var(--bg), var(--bg-soft));
+      font-family: "Sora", "Segoe UI", sans-serif;
+      line-height: 1.58;
+      scroll-behavior: smooth;
+    }
+
+    .texture {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: radial-gradient(rgba(22, 26, 35, 0.045) 0.55px, transparent 0.55px);
+      background-size: 9px 9px;
+      opacity: 0.35;
+      z-index: 0;
+    }
+
+    .halo {
+      position: fixed;
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      filter: blur(8px);
+      opacity: 0.34;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .halo.one {
+      right: -100px;
+      top: -60px;
+      background: radial-gradient(circle, rgba(240, 154, 34, 0.5), transparent 70%);
+    }
+
+    .halo.two {
+      left: -110px;
+      bottom: -90px;
+      background: radial-gradient(circle, rgba(19, 114, 116, 0.45), transparent 72%);
+    }
+
+    .page {
+      width: min(1220px, 94vw);
+      margin: 0 auto;
+      padding: 26px 0 64px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero {
+      background: linear-gradient(145deg, rgba(255, 250, 242, 0.9), rgba(255, 255, 255, 0.6));
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      padding: 30px 28px 24px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      right: -90px;
+      top: -80px;
+      width: 250px;
+      height: 250px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(204, 75, 28, 0.22), transparent 68%);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      font-family: "JetBrains Mono", monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 12px;
+      color: var(--accent-deep);
+      background: rgba(46, 54, 88, 0.1);
+      border: 1px solid rgba(46, 54, 88, 0.2);
+      border-radius: 999px;
+      padding: 5px 10px;
+      margin-bottom: 14px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.18;
+    }
+
+    h1 {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(2rem, 4.8vw, 3.35rem);
+      max-width: 16ch;
+      margin-bottom: 10px;
+      letter-spacing: 0.01em;
+    }
+
+    h2 {
+      font-size: clamp(1.4rem, 2.2vw, 2rem);
+      margin-bottom: 8px;
+    }
+
+    h3 {
+      font-size: 1.04rem;
+      margin-bottom: 8px;
+    }
+
+    .lead {
+      max-width: 84ch;
+      color: var(--ink-soft);
+      margin-bottom: 0;
+    }
+
+    .quick {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .quick-item {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 12px 12px 10px;
+      background: var(--card);
+      min-height: 112px;
+    }
+
+    .quick-item strong {
+      display: block;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--accent-cool);
+      margin-bottom: 7px;
+    }
+
+    .quick-item p {
+      margin: 0;
+      color: var(--ink);
+      font-size: 0.93rem;
+    }
+
+    .jump {
+      position: sticky;
+      top: 10px;
+      z-index: 15;
+      margin: 14px 0 18px;
+      border: 1px solid rgba(22, 26, 35, 0.16);
+      border-radius: 14px;
+      background: rgba(255, 252, 246, 0.86);
+      backdrop-filter: blur(8px);
+      padding: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .jump a {
+      text-decoration: none;
+      font-size: 0.87rem;
+      color: #3c4352;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 6px 10px;
+      transition: 0.18s ease;
+      white-space: nowrap;
+    }
+
+    .jump a:hover {
+      color: #141820;
+      border-color: var(--line);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    section {
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      padding: 24px;
+      margin-bottom: 14px;
+    }
+
+    .sub {
+      margin: 0 0 15px;
+      color: var(--ink-soft);
+    }
+
+    code,
+    pre,
+    .mono {
+      font-family: "JetBrains Mono", "Consolas", monospace;
+    }
+
+    code {
+      background: rgba(19, 114, 116, 0.13);
+      color: #114f50;
+      border: 1px solid rgba(19, 114, 116, 0.2);
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 0.88rem;
+    }
+
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .flow-step {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.68);
+      padding: 13px 12px 12px;
+      min-height: 190px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .flow-step::after {
+      content: "";
+      position: absolute;
+      right: -40px;
+      bottom: -50px;
+      width: 130px;
+      height: 130px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(240, 154, 34, 0.14), transparent 70%);
+    }
+
+    .flow-step .id {
+      display: inline-block;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      line-height: 30px;
+      text-align: center;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      margin-bottom: 8px;
+      border: 1px solid rgba(204, 75, 28, 0.35);
+      color: var(--accent-strong);
+      background: rgba(204, 75, 28, 0.1);
+    }
+
+    .flow-step h3 {
+      margin-bottom: 7px;
+    }
+
+    .io-line {
+      margin: 5px 0 0;
+      font-size: 0.86rem;
+      color: #333d4e;
+    }
+
+    .io-line strong {
+      color: #161a23;
+    }
+
+    .stage {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.65);
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    .stage:last-child {
+      margin-bottom: 0;
+    }
+
+    .stage-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .badge {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      border: 1px solid rgba(19, 114, 116, 0.35);
+      color: #0f6364;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: rgba(19, 114, 116, 0.08);
+      white-space: nowrap;
+    }
+
+    .triplet {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .triplet > div {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.66);
+    }
+
+    .triplet h4 {
+      margin: 0 0 7px;
+      font-size: 0.88rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #2d3646;
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    .triplet p,
+    .triplet ul {
+      margin: 0;
+      color: #313b4a;
+      font-size: 0.9rem;
+    }
+
+    .triplet ul {
+      padding-left: 18px;
+    }
+
+    .branch-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .branch {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.66);
+      padding: 12px;
+    }
+
+    .branch .head {
+      display: inline-block;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--accent-strong);
+      margin-bottom: 8px;
+    }
+
+    .branch p {
+      margin: 0 0 8px;
+      color: #333d4e;
+      font-size: 0.91rem;
+    }
+
+    .shape-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      font-size: 0.9rem;
+    }
+
+    .shape-table th,
+    .shape-table td {
+      text-align: left;
+      vertical-align: top;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .shape-table th {
+      background: rgba(240, 154, 34, 0.18);
+      color: #2a2f3f;
+      font-weight: 700;
+    }
+
+    .shape-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .callout {
+      border: 1px solid rgba(204, 75, 28, 0.4);
+      border-left: 5px solid var(--accent-strong);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(204, 75, 28, 0.08);
+      color: #5a311d;
+      margin-top: 10px;
+      font-size: 0.9rem;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .tab-btn {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.66);
+      color: #2f394a;
+      padding: 6px 12px;
+      font-family: "Sora", sans-serif;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+
+    .tab-btn.active {
+      border-color: rgba(46, 54, 88, 0.45);
+      background: rgba(46, 54, 88, 0.13);
+      color: #1f2642;
+      font-weight: 600;
+    }
+
+    .tab-pane {
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.7);
+      padding: 12px;
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .tab-pane ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .tab-pane li {
+      margin-bottom: 6px;
+      color: #313b4a;
+    }
+
+    .manifest {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .manifest .box {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.66);
+    }
+
+    .manifest ul {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 0.9rem;
+      color: #313b4a;
+    }
+
+    .tensor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .tensor-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px;
+    }
+
+    .tensor-card h4 {
+      margin: 0 0 7px;
+      font-size: 0.89rem;
+      font-family: "JetBrains Mono", monospace;
+      color: #233047;
+    }
+
+    .tensor-card p {
+      margin: 0 0 7px;
+      color: #333d4e;
+      font-size: 0.89rem;
+    }
+
+    .tensor-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #313b4a;
+      font-size: 0.87rem;
+    }
+
+    .tensor-card li {
+      margin-bottom: 5px;
+    }
+
+    .glossary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .term-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px;
+    }
+
+    .term-card h3 {
+      margin-bottom: 6px;
+      font-size: 0.95rem;
+      color: #1f2a40;
+    }
+
+    .term-card p {
+      margin: 0;
+      color: #384457;
+      font-size: 0.9rem;
+    }
+
+    .trace {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: #fffdf8;
+      padding: 12px;
+      overflow: auto;
+    }
+
+    .trace pre {
+      margin: 0;
+      font-size: 0.84rem;
+      color: #2d3447;
+      white-space: pre-wrap;
+    }
+
+    .footer {
+      margin-top: 2px;
+      text-align: center;
+      color: #5b6474;
+      font-size: 0.84rem;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(16px);
+      transition: opacity 0.55s ease, transform 0.55s ease;
+    }
+
+    .reveal.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 1040px) {
+      .quick,
+      .flow-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .triplet,
+      .branch-grid,
+      .manifest,
+      .tensor-grid,
+      .glossary-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .page {
+        width: min(1220px, 96vw);
+      }
+
+      .hero,
+      section {
+        padding: 18px 14px;
+      }
+
+      .quick,
+      .flow-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .jump {
+        top: 6px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="texture"></div>
+  <div class="halo one"></div>
+  <div class="halo two"></div>
+
+  <main class="page">
+    <header class="hero reveal">
+      <span class="eyebrow">Pipeline Explainer</span>
+      <h1>How Data Flows Through src/model.py</h1>
+      <p class="lead">
+        This single page maps the complete pipeline in <code>src/model.py</code>: CLI parsing, CSV ingestion,
+        schema adaptation, feature materialization, binary label derivation, balancing, tensorization,
+        ADLM style BiLSTM + CRF training, metric computation, and checkpoint export.
+      </p>
+
+      <div class="quick">
+        <article class="quick-item">
+          <strong>Primary Input</strong>
+          <p>Raw issue CSVs or already prepared 4-feature CSVs from one or multiple files.</p>
+        </article>
+        <article class="quick-item">
+          <strong>Feature Branches</strong>
+          <p>Text tokens, temporal vector (2), categorical vector (29), contextual vector (3).</p>
+        </article>
+        <article class="quick-item">
+          <strong>Label Space</strong>
+          <p>Binary report labels: non_duplicate = 0, duplicate = 1.</p>
+        </article>
+        <article class="quick-item">
+          <strong>Main Outputs</strong>
+          <p>Prepared balanced CSV plus a .pt checkpoint containing model state, config, vocab, and metrics.</p>
+        </article>
+      </div>
+    </header>
+
+    <nav class="jump reveal">
+      <a href="#atlas">Pipeline Atlas</a>
+      <a href="#stages">Stage Breakdown</a>
+      <a href="#features">Feature Branches</a>
+      <a href="#tensors">Tensor Shapes</a>
+      <a href="#tensor-inside">Tensor Contents</a>
+      <a href="#training">Training and Evaluation</a>
+      <a href="#outputs">Artifacts</a>
+      <a href="#modes">Run Modes</a>
+      <a href="#glossary">Glossary</a>
+      <a href="#trace">One Row Trace</a>
+    </nav>
+
+    <section id="atlas" class="reveal">
+      <h2>Pipeline Atlas</h2>
+      <p class="sub">Every block below shows exact input, work, and output for that stage in execution order.</p>
+
+      <div class="flow-grid">
+        <article class="flow-step">
+          <span class="id">01</span>
+          <h3>Parse CLI and Build TrainConfig</h3>
+          <p class="io-line"><strong>Input:</strong> command flags like <code>--data_path</code>, <code>--start_training</code>, <code>--epochs</code>.</p>
+          <p class="io-line"><strong>Work:</strong> <code>parse_args</code> validates arguments and fills defaults.</p>
+          <p class="io-line"><strong>Output:</strong> a typed <code>TrainConfig</code> object.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">02</span>
+          <h3>Resolve Dataset Paths</h3>
+          <p class="io-line"><strong>Input:</strong> one path or multiple paths.</p>
+          <p class="io-line"><strong>Work:</strong> <code>resolve_training_data_paths</code> normalizes all path inputs.</p>
+          <p class="io-line"><strong>Output:</strong> list of <code>Path</code> objects, or error if missing.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">03</span>
+          <h3>Initialize Run</h3>
+          <p class="io-line"><strong>Input:</strong> <code>TrainConfig</code>.</p>
+          <p class="io-line"><strong>Work:</strong> <code>configure_logging</code> and <code>set_seed</code>.</p>
+          <p class="io-line"><strong>Output:</strong> reproducible and logged training environment.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">04</span>
+          <h3>Load Each Dataset</h3>
+          <p class="io-line"><strong>Input:</strong> CSV file path.</p>
+          <p class="io-line"><strong>Work:</strong> <code>load_modeling_dataframe</code> reads CSV and strips header whitespace.</p>
+          <p class="io-line"><strong>Output:</strong> cleaned DataFrame ready for feature adaptation.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">05</span>
+          <h3>Auto Build 4-Feature Schema</h3>
+          <p class="io-line"><strong>Input:</strong> source columns such as Description, Priority, Bug Creation Date, Components.</p>
+          <p class="io-line"><strong>Work:</strong> <code>build_four_feature_dataframe</code> emits textual, categorical, temporal, contextual fields.</p>
+          <p class="io-line"><strong>Output:</strong> consistent 4-feature DataFrame and optional <code>*_4features.csv</code> file.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">06</span>
+          <h3>Materialize Vectors</h3>
+          <p class="io-line"><strong>Input:</strong> string/JSON feature columns.</p>
+          <p class="io-line"><strong>Work:</strong> compute <code>contextual_text_plain</code>, <code>temporal_vector</code>, <code>contextual_vector</code>, <code>categorical_vector</code>.</p>
+          <p class="io-line"><strong>Output:</strong> numeric arrays attached to every row.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">07</span>
+          <h3>Resolve and Derive Binary Labels</h3>
+          <p class="io-line"><strong>Input:</strong> explicit label column or weak duplicate cues in text.</p>
+          <p class="io-line"><strong>Work:</strong> <code>detect_label_column</code>, <code>normalize_label</code>, <code>derive_binary_label</code>.</p>
+          <p class="io-line"><strong>Output:</strong> <code>binary_label</code> with {0, 1}.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">08</span>
+          <h3>Combine and Balance</h3>
+          <p class="io-line"><strong>Input:</strong> labeled rows from all datasets.</p>
+          <p class="io-line"><strong>Work:</strong> remove empty text rows, then down-sample each class to minimum count.</p>
+          <p class="io-line"><strong>Output:</strong> balanced DataFrame for training.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">09</span>
+          <h3>Persist Prepared CSV</h3>
+          <p class="io-line"><strong>Input:</strong> balanced DataFrame.</p>
+          <p class="io-line"><strong>Work:</strong> save to <code>prepared_data_out</code>.</p>
+          <p class="io-line"><strong>Output:</strong> reproducible training table on disk.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">10</span>
+          <h3>Examples, Vocab, Dataloaders</h3>
+          <p class="io-line"><strong>Input:</strong> balanced DataFrame.</p>
+          <p class="io-line"><strong>Work:</strong> <code>build_examples</code>, split, build vocab, encode tokens, create DataLoaders.</p>
+          <p class="io-line"><strong>Output:</strong> batched tensors for train and validation.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">11</span>
+          <h3>Train and Evaluate</h3>
+          <p class="io-line"><strong>Input:</strong> batched tensors and model params.</p>
+          <p class="io-line"><strong>Work:</strong> forward pass, CRF loss, backprop, metrics, best-F1 tracking.</p>
+          <p class="io-line"><strong>Output:</strong> best validation metrics and best model state.</p>
+        </article>
+
+        <article class="flow-step">
+          <span class="id">12</span>
+          <h3>Save Checkpoint</h3>
+          <p class="io-line"><strong>Input:</strong> model state + metadata.</p>
+          <p class="io-line"><strong>Work:</strong> write timestamped or user-provided <code>.pt</code> file.</p>
+          <p class="io-line"><strong>Output:</strong> full artifact for later loading or inference.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="stages" class="reveal">
+      <h2>Detailed Stage Breakdown</h2>
+      <p class="sub">These cards explain exactly what enters, what transformation runs, and what leaves each major stage.</p>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Stage A: Ingestion and Schema Standardization</h3>
+          <span class="badge">load_modeling_dataframe</span>
+        </div>
+        <div class="triplet">
+          <div>
+            <h4>Input</h4>
+            <p>Any CSV with either the canonical 4 feature columns or raw issue-style columns.</p>
+          </div>
+          <div>
+            <h4>Transform</h4>
+            <ul>
+              <li>Column names are trimmed.</li>
+              <li>If the 4 model columns are missing, the script checks if source fields are sufficient.</li>
+              <li>When sufficient, it converts source columns into standardized feature payloads.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Output</h4>
+            <p>DataFrame with <code>textual_features</code>, <code>categorical_features</code>, <code>temporal_features</code>, and <code>contextual_features</code>.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Stage B: Feature Materialization</h3>
+          <span class="badge">build_*_vector helpers</span>
+        </div>
+        <div class="triplet">
+          <div>
+            <h4>Input</h4>
+            <p>Text and JSON-like strings in feature columns.</p>
+          </div>
+          <div>
+            <h4>Transform</h4>
+            <ul>
+              <li>Text is normalized with tokenization and stopword filtering.</li>
+              <li>Temporal values are parsed to days since epoch and hours from LUCENE-1.</li>
+              <li>Categorical vector becomes one-hot over priority, severity, type, component.</li>
+              <li>Context vector becomes numeric IDs (or presence fallback values).</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Output</h4>
+            <p>Per-row numeric arrays: temporal length 2, categorical length 29, contextual length 3.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Stage C: Binary Label Derivation and Balancing</h3>
+          <span class="badge">prepare_training_dataframe</span>
+        </div>
+        <div class="triplet">
+          <div>
+            <h4>Input</h4>
+            <p>Materialized rows from one or more datasets.</p>
+          </div>
+          <div>
+            <h4>Transform</h4>
+            <ul>
+              <li>Detect supervision column from explicit option or known candidates.</li>
+              <li>Map labels to <code>non_duplicate</code> or <code>duplicate</code>.</li>
+              <li>Fallback to weak duplicate phrase matching when no explicit target is usable.</li>
+              <li>Balance classes by down-sampling each class to the minimum class count.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Output</h4>
+            <p>Balanced frame with integer <code>binary_label</code> column and equal class counts.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Stage D: Example Objects and Batch Tensors</h3>
+          <span class="badge">build_examples + BugReportDataset</span>
+        </div>
+        <div class="triplet">
+          <div>
+            <h4>Input</h4>
+            <p>Balanced DataFrame with text and vectors.</p>
+          </div>
+          <div>
+            <h4>Transform</h4>
+            <ul>
+              <li>Create <code>BugExample</code> records from rows.</li>
+              <li>Build vocabulary from training text only.</li>
+              <li>Encode each report to fixed-length <code>input_ids</code> and <code>attention_mask</code>.</li>
+              <li>Broadcast report label into token-level <code>tag_ids</code> for CRF loss.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Output</h4>
+            <p>Train and validation DataLoaders that yield full model input dictionaries.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Stage E: Model Fit, Validation, and Checkpoint Selection</h3>
+          <span class="badge">run_training loop</span>
+        </div>
+        <div class="triplet">
+          <div>
+            <h4>Input</h4>
+            <p>DataLoaders, model hyperparameters, optimizer setup.</p>
+          </div>
+          <div>
+            <h4>Transform</h4>
+            <ul>
+              <li>Train batches with CRF negative log-likelihood plus optional CRF L2 penalty.</li>
+              <li>Evaluate with class probabilities derived from CRF log-likelihoods.</li>
+              <li>Track best validation F1 and keep matching state dict.</li>
+              <li>Handle KeyboardInterrupt and still save a valid checkpoint.</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Output</h4>
+            <p>Saved model file containing best and latest states, vocabulary, config, and metrics.</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section id="features" class="reveal">
+      <h2>Feature Branches: What Exactly Happens</h2>
+      <p class="sub">The model fuses one text branch with three side-feature branches.</p>
+
+      <div class="branch-grid">
+        <article class="branch">
+          <span class="head">Text Branch</span>
+          <p><strong>Raw:</strong> <code>textual_features</code>.</p>
+          <p><strong>Processing:</strong> lowercase, regex tokenization <code>[a-z0-9_]+</code>, stopword removal.</p>
+          <p><strong>Output:</strong> token IDs and attention mask with fixed <code>max_seq_len</code>.</p>
+        </article>
+
+        <article class="branch">
+          <span class="head">Temporal Branch</span>
+          <p><strong>Raw:</strong> timestamp text and bug ID values, often via JSON payload.</p>
+          <p><strong>Processing:</strong> parse multi-format datetime, compute days since Unix epoch and gap hours from LUCENE-1.</p>
+          <p><strong>Output:</strong> <code>[days_since_epoch, gap_from_lucene1_hours]</code>.</p>
+        </article>
+
+        <article class="branch">
+          <span class="head">Categorical Branch</span>
+          <p><strong>Raw:</strong> priority/severity/type/component fields or heuristics from text.</p>
+          <p><strong>Processing:</strong> concatenate one-hot vectors for 4 categorical groups.</p>
+          <p><strong>Output:</strong> 29-length vector (5 + 5 + 8 + 11).</p>
+        </article>
+
+        <article class="branch">
+          <span class="head">Contextual Branch</span>
+          <p><strong>Raw:</strong> assigned_to, fix_version, components (or their text form).</p>
+          <p><strong>Processing:</strong> deterministic first-seen ID mapping with 0 reserved for empty values.</p>
+          <p><strong>Output:</strong> <code>[components_id, assigned_to_id, fix_version_id]</code>.</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        Label semantics in current code are binary. REPORT_LABELS is [non_duplicate, duplicate], so class count C = 2 throughout evaluation and CRF probability scoring.
+      </div>
+    </section>
+
+    <section id="tensors" class="reveal">
+      <h2>Tensor Shape Trace Through ADLMBiLSTMCRF</h2>
+      <p class="sub">B = batch size, L = max sequence length, E = embedding dim, H = hidden size, C = number of labels (2).</p>
+
+      <table class="shape-table">
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Operation</th>
+            <th>Input</th>
+            <th>Output</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Embedding lookup</td>
+            <td>[B, L]</td>
+            <td>[B, L, E]</td>
+            <td>Convert token IDs to dense embeddings.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>LSTM text encoder</td>
+            <td>[B, L, E]</td>
+            <td>[B, L, H]</td>
+            <td>Create contextual token states from text.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Concatenate side features</td>
+            <td>[B, 2], [B, 29], [B, 3]</td>
+            <td>[B, 34]</td>
+            <td>Combine non-text channels into a single vector.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Side encoder MLP</td>
+            <td>[B, 34]</td>
+            <td>[B, H]</td>
+            <td>Align side feature scale with text hidden width.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Broadcast side state</td>
+            <td>[B, H]</td>
+            <td>[B, L, H]</td>
+            <td>Attach report-level side context to each token position.</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>Fusion concat</td>
+            <td>[B, L, H] + [B, L, H]</td>
+            <td>[B, L, 2H]</td>
+            <td>Merge text and side streams.</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>Emission head MLP</td>
+            <td>[B, L, 2H]</td>
+            <td>[B, L, C]</td>
+            <td>Produce token logits for CRF decoding.</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td>CRF decode + class scoring</td>
+            <td>emissions + mask</td>
+            <td>decoded tags + [B, C]</td>
+            <td>Get token sequence and report-level class probabilities.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <article id="tensor-inside" class="stage" style="margin-top: 12px;">
+        <div class="stage-title">
+          <h3>What Each Tensor Means and What Is Inside It</h3>
+          <span class="badge">tensor semantics</span>
+        </div>
+        <p class="sub" style="margin-bottom: 8px;">
+          These tensors are not anonymous numbers. Each index has a specific meaning tied to how the dataset and model are built.
+        </p>
+
+        <div class="tensor-grid">
+          <div class="tensor-card">
+            <h4>input_ids [B, L] (torch.long)</h4>
+            <p>Token ID per position after vocabulary encoding.</p>
+            <ul>
+              <li>0 is PAD.</li>
+              <li>1 is UNK for unseen tokens.</li>
+              <li>2+ are learned vocabulary IDs from training texts.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>attention_mask [B, L] (torch.bool)</h4>
+            <p>Marks which token positions are real text versus padding.</p>
+            <ul>
+              <li>1 means valid token.</li>
+              <li>0 means padding slot.</li>
+              <li>Used by CRF so padding positions do not affect decoding/loss.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>temporal_features [B, 2] (torch.float32)</h4>
+            <p>Two date-math values per report.</p>
+            <ul>
+              <li>Index 0: days since Unix epoch.</li>
+              <li>Index 1: hours from LUCENE-1 creation time.</li>
+              <li>Fallback [0.0, 0.0] if parsing fails.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>categorical_features [B, 29] (torch.float32)</h4>
+            <p>Concatenated one-hot vector over 4 categorical groups.</p>
+            <ul>
+              <li>Priority (5), Severity (5), Type (8), Component (11).</li>
+              <li>Usually one active entry per group, often including unknown slots.</li>
+              <li>Represents symbolic metadata as numeric features.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>contextual_features [B, 3] (torch.float32)</h4>
+            <p>ID-like context features from deterministic first-seen mapping.</p>
+            <ul>
+              <li>Index 0: components_id.</li>
+              <li>Index 1: assigned_to_id.</li>
+              <li>Index 2: fix_version_id.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>tag_ids [B, L] and label [B]</h4>
+            <p>Supervision tensors used for training.</p>
+            <ul>
+              <li>label is report-level class: 0 non_duplicate or 1 duplicate.</li>
+              <li>tag_ids repeats label over non-padding positions.</li>
+              <li>For class 0 reports, tag_ids are all zeros.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>embeddings [B, L, E]</h4>
+            <p>Dense vectors looked up from embedding matrix using input_ids.</p>
+            <ul>
+              <li>Each token index maps to an E-dimensional float vector.</li>
+              <li>Embedding values are trainable parameters.</li>
+              <li>Semantically similar tokens can move closer in embedding space.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>lstm_output [B, L, H]</h4>
+            <p>Contextual hidden state for each token after the text LSTM.</p>
+            <ul>
+              <li>Each vector summarizes token meaning with neighboring context.</li>
+              <li>Still aligned one vector per token position.</li>
+              <li>Feeds directly into fusion with side features.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>side_features [B, 34] and side_representation [B, H]</h4>
+            <p>Non-text branch before and after projection MLP.</p>
+            <ul>
+              <li>side_features = concat(temporal 2 + categorical 29 + contextual 3).</li>
+              <li>side_encoder MLP transforms [B, 34] into [B, H].</li>
+              <li>This aligns side-channel scale with text hidden size.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>fused_representation [B, L, 2H]</h4>
+            <p>Concatenation of token text state and broadcast side state.</p>
+            <ul>
+              <li>side_representation is expanded to [B, L, H].</li>
+              <li>Each token gets the same report-level side context.</li>
+              <li>Fusion carries both lexical and metadata signals.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>emissions [B, L, C]</h4>
+            <p>Raw per-token class logits produced by emission head MLP.</p>
+            <ul>
+              <li>Not probabilities yet.</li>
+              <li>Higher value for a class means stronger score for that token.</li>
+              <li>Consumed by CRF for structured decoding and scoring.</li>
+            </ul>
+          </div>
+
+          <div class="tensor-card">
+            <h4>decoded_tags, class_probabilities, loss</h4>
+            <p>Final prediction and optimization objects.</p>
+            <ul>
+              <li>decoded_tags: Viterbi best label sequence per report.</li>
+              <li>class_probabilities [B, 2]: normalized report-level class scores.</li>
+              <li>loss: scalar objective = negative CRF log-likelihood (+ optional L2 penalty).</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section id="training" class="reveal">
+      <h2>Training and Evaluation Loop</h2>
+      <p class="sub">The loop combines batch training with epoch-level validation and best-model selection by F1.</p>
+
+      <article class="stage" style="margin-bottom: 10px;">
+        <div class="stage-title">
+          <h3>Train One Epoch</h3>
+          <span class="badge">train_one_epoch</span>
+        </div>
+        <ul style="margin: 0; padding-left: 20px; color: #313b4a;">
+          <li>Move each batch to CPU or GPU device.</li>
+          <li>Forward pass includes <code>tag_ids</code> to compute CRF log-likelihood.</li>
+          <li>Loss is negative log-likelihood plus optional CRF regularization term.</li>
+          <li>Run backward pass, gradient clipping, optimizer step.</li>
+        </ul>
+      </article>
+
+      <article class="stage">
+        <div class="stage-title">
+          <h3>Evaluate</h3>
+          <span class="badge">evaluate + compute_metrics</span>
+        </div>
+        <ul style="margin: 0; padding-left: 20px; color: #313b4a;">
+          <li>Forward pass in no-grad mode still computes loss and class probabilities.</li>
+          <li>Predictions are <code>argmax</code> over class probabilities from CRF scoring.</li>
+          <li>Metrics: accuracy, macro precision, macro recall, macro F1, Cohen kappa, and average loss.</li>
+          <li>Highest validation F1 controls which checkpoint state becomes best.</li>
+        </ul>
+      </article>
+
+      <div class="callout">
+        Optional Dragonfly mode (<code>--use_dragonfly</code>) searches learning rate, hidden size, dropout, and CRF regularization, then trains the final model with the best candidate.
+      </div>
+    </section>
+
+    <section id="outputs" class="reveal">
+      <h2>What Files and Objects Are Produced</h2>
+      <p class="sub">Two main artifacts are always important: a prepared dataset CSV and the model checkpoint.</p>
+
+      <div class="manifest">
+        <div class="box">
+          <h3>Prepared CSV (<code>prepared_data_out</code>)</h3>
+          <ul>
+            <li>Balanced binary classes.</li>
+            <li>Cleaned text and materialized vectors.</li>
+            <li>Useful for reproducible reruns without repeating all preprocessing logic.</li>
+          </ul>
+        </div>
+
+        <div class="box">
+          <h3>Checkpoint (<code>.pt</code>)</h3>
+          <ul>
+            <li><code>model_state_dict</code> and <code>best_model_state_dict</code>.</li>
+            <li><code>vocabulary</code> token to ID map.</li>
+            <li><code>model_config</code> including feature dimensions and label names.</li>
+            <li><code>best_metrics</code> and run metadata such as status and epoch counters.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="modes" class="reveal">
+      <h2>How the Pipeline Behaves by Mode</h2>
+      <p class="sub">The data front-half is shared, then behavior diverges depending on runtime mode.</p>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="mode-prepare">Prepare only</button>
+        <button class="tab-btn" data-tab="mode-train">Prepare + train</button>
+        <button class="tab-btn" data-tab="mode-interrupt">Interrupted training</button>
+      </div>
+
+      <div id="mode-prepare" class="tab-pane active">
+        <ul>
+          <li>Runs data loading, schema conversion, vector materialization, label derivation, and balancing.</li>
+          <li>Saves prepared CSV.</li>
+          <li>Stops before building datasets or model weights when <code>--start_training</code> is not set.</li>
+        </ul>
+      </div>
+
+      <div id="mode-train" class="tab-pane">
+        <ul>
+          <li>Includes all preparation steps, then runs split, vocabulary, DataLoaders, and training epochs.</li>
+          <li>Tracks best validation F1 and stores best model state.</li>
+          <li>Saves final checkpoint with complete metadata.</li>
+        </ul>
+      </div>
+
+      <div id="mode-interrupt" class="tab-pane">
+        <ul>
+          <li>If a KeyboardInterrupt occurs, status is set to interrupted.</li>
+          <li>The script still writes a valid checkpoint, using latest available state for <code>model_state_dict</code>.</li>
+          <li>Training progress metadata records last completed epoch.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="glossary" class="reveal">
+      <h2>Glossary of Model Terms</h2>
+      <p class="sub">Quick definitions for common terms used across this page and inside the training code.</p>
+
+      <div class="glossary-grid">
+        <article class="term-card">
+          <h3>Embedding Lookup</h3>
+          <p>Operation that maps each integer token ID to a dense trainable vector from an embedding table.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Side Features</h3>
+          <p>Non-text numeric signals concatenated from temporal, categorical, and contextual branches.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>MLP</h3>
+          <p>Multi-layer perceptron: stacked linear layers with nonlinear activations used for projection and scoring.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Side Encoder</h3>
+          <p>MLP that projects side features to hidden size H so they can be fused with text hidden states.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Emission Head</h3>
+          <p>Final MLP that converts fused token states into class logits for CRF processing.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Logits</h3>
+          <p>Unnormalized class scores before softmax. Larger logits mean stronger preference for a class.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>CRF</h3>
+          <p>Conditional Random Field layer that models label-sequence consistency and scores entire tag paths.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Viterbi Decode</h3>
+          <p>Dynamic-programming algorithm that finds the highest-scoring sequence of labels under the CRF.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Attention Mask</h3>
+          <p>Boolean tensor that marks valid tokens and tells the model to ignore padded positions.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>One-Hot Encoding</h3>
+          <p>Vector where one index is 1 and all others are 0, representing a categorical choice.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Broadcasting</h3>
+          <p>Expanding a smaller tensor across a dimension, such as repeating side state across all token positions.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Hidden State</h3>
+          <p>Intermediate learned representation produced by recurrent layers, carrying contextual information.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Log-Likelihood</h3>
+          <p>Score of how probable the observed labels are under model parameters; training maximizes this value.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Regularization</h3>
+          <p>Penalty term added to discourage overfitting; here an optional L2 penalty on CRF parameters.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Gradient Clipping</h3>
+          <p>Caps gradient norm to stabilize training and prevent exploding updates.</p>
+        </article>
+
+        <article class="term-card">
+          <h3>Macro F1</h3>
+          <p>Average F1 computed per class and then averaged equally, useful with class imbalance checks.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="trace" class="reveal">
+      <h2>One Row End-to-End Trace</h2>
+      <p class="sub">Concrete example of how one issue report moves across all stages.</p>
+
+      <div class="trace">
+        <pre>Input row (raw CSV)
+- Description: "App freezes while opening large project"
+- Priority Name: "High"
+- Bug Creation Date: "2001-10-09T16:19:16.000+0000"
+- Components: "ui"
+- Resolution: "DUPLICATE"
+
+After load_modeling_dataframe
+- textual_features: normalized cleaned text
+- categorical_features: JSON payload (priority and one-hot vector)
+- temporal_features: JSON payload (date fields and date math)
+- contextual_features: JSON payload (assigned_to/fix_version/components + IDs)
+
+After prepare_training_dataframe
+- binary_label: 1 (duplicate)
+- dataset_source: source CSV stem
+- dataframe may be down-sampled to match minority class count
+
+After BugReportDataset encoding
+- input_ids: fixed length integer vector [L]
+- attention_mask: [L] where 1 = token and 0 = padding
+- temporal_features: [2]
+- categorical_features: [29]
+- contextual_features: [3]
+- tag_ids: [L] with report label broadcast on non-padding tokens
+
+Inside ADLMBiLSTMCRF
+- embeddings -> LSTM token states
+- side vectors -> side MLP representation
+- fused token representation -> emission logits [L, 2]
+- CRF decode gives token tags
+- class_probabilities gives report-level [non_duplicate, duplicate]
+
+Evaluation output
+- predicted class id: argmax(class_probabilities)
+- reported metrics include accuracy, macro precision/recall/F1, kappa, and loss</pre>
+      </div>
+    </section>
+
+    <p class="footer">Explainer generated from the current src/model.py implementation in this workspace.</p>
+  </main>
+
+  <script>
+    const reveals = document.querySelectorAll(".reveal");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("show");
+          }
+        });
+      },
+      { threshold: 0.12 }
+    );
+    reveals.forEach((item) => observer.observe(item));
+
+    const tabs = document.querySelectorAll(".tab-btn");
+    const panes = document.querySelectorAll(".tab-pane");
+
+    tabs.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabs.forEach((b) => b.classList.remove("active"));
+        panes.forEach((p) => p.classList.remove("active"));
+
+        btn.classList.add("active");
+        const pane = document.getElementById(btn.dataset.tab);
+        if (pane) {
+          pane.classList.add("active");
+        }
+      });
+    });
+  </script>
+</body>
+</html>
