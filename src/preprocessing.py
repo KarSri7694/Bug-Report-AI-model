@@ -50,7 +50,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     
 
     # Handle missing values (example: fill with mean for numeric columns)
-    features = ["Summary", "Description", "Issue key", "Issue id", "Priority", "Created", "Creator", ]
+    features = ['Bug Id', 'Priority Id', 'Priority Name', 'Status', 'Resolution', 'Description', 'Assigned To', 'Fix Version', 'Bug Creation Date', 'Components']
     for column in df.columns:
         if column not in features:
             df.drop(column, axis=1, inplace=True)
@@ -65,7 +65,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # Remove rows where 'Issue key' doesn't match the pattern SRCTREEWIN-<number>
     pattern = r'^SRCTREEWIN-\d+$'
-    df = df[df['Issue key'].astype(str).str.match(pattern, na=False)]
+    # df = df[df['Issue key'].astype(str).str.match(pattern, na=False)]
 
     logging.info(f"Shape after removing rows not matching 'Issue key' pattern: {df.shape}")
 
@@ -89,9 +89,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
         tokens = [word for word in tokens if word not in stop_words]
         return ' '.join(tokens)
     
-    df['Summary'] = df['Summary'].apply(preprocess_text)
     df['Description'] = df['Description'].apply(preprocess_text)
-    df['Priority'] = df['Priority'].apply(convert_priority_to_numeric)
     
     #see new data
     print(df.head())
@@ -102,7 +100,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    file_path = 'dataset/GFG_FINAL.csv'  
+    file_path = 'dataset/apache_LUCENE_1_7474.csv'  
     data = load_data(file_path)
     view_data(data)
     preprocess_data(data)

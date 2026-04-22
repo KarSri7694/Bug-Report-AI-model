@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import math
 import random
 import re
@@ -14,6 +15,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from TorchCRF import CRF
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sklearn.metrics import accuracy_score, cohen_kappa_score, precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
@@ -46,6 +48,37 @@ COMPONENT_LABELS = [
 ]
 
 LABEL_COLUMN_CANDIDATES = ["label", "target", "is_duplicate", "duplicate", "bug_label"]
+REPORT_LABELS = ["non_duplicate", "duplicate"]
+REPORT_LABEL_TO_ID = {label: idx for idx, label in enumerate(REPORT_LABELS)}
+STOP_WORDS = set(ENGLISH_STOP_WORDS)
+
+DESCRIPTION_COLUMN_CANDIDATES = ["Description"]
+PRIORITY_NAME_COLUMN_CANDIDATES = ["Priority Name", "Prioirty Name", "priority_name"]
+PRIORITY_ID_COLUMN_CANDIDATES = ["Priority Id", "Priority ID", "Prioirity Id", "priority_id"]
+BUG_CREATION_DATE_COLUMN_CANDIDATES = ["Bug Creation Date", "Bug creation Date", "created"]
+BUG_ID_COLUMN_CANDIDATES = ["Bug Id", "Bug ID", "report_id", "Issue key"]
+ASSIGNED_TO_COLUMN_CANDIDATES = ["Assigned To", "Assigned to", "assignee"]
+FIX_VERSION_COLUMN_CANDIDATES = ["Fix Version", "Fix version"]
+COMPONENTS_COLUMN_CANDIDATES = ["Components", "Component/s"]
+RESOLUTION_COLUMN_CANDIDATES = ["Resolution"]
+
+LOGGER = logging.getLogger(__name__)
+
+
+def configure_logging(level_name: str = "INFO", log_file: Optional[Path] = None) -> None:
+    """Configure console/file logging for data preparation and training runs."""
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=handlers,
+        force=True,
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -58,8 +91,14 @@ def set_seed(seed: int) -> None:
 
 
 def tokenize_text(text: str) -> List[str]:
-    """Simple tokenizer used by the ADLM text branch."""
-    return re.findall(r"[a-z0-9_]+", str(text).lower())
+    """Tokenize text and remove stopwords for the textual branch."""
+    tokens = re.findall(r"[a-z0-9_]+", str(text).lower())
+    return [token for token in tokens if token not in STOP_WORDS]
+
+
+def normalize_text_for_training(text: str) -> str:
+    """Lowercase text, remove punctuation, and remove stopwords."""
+    return " ".join(tokenize_text(text))
 
 
 def safe_json_load(value: object) -> Dict[str, object]:
@@ -78,6 +117,247 @@ def safe_json_load(value: object) -> Dict[str, object]:
 def one_hot(label: str, labels: Sequence[str]) -> List[float]:
     """Convert a label into a dense one-hot list for fixed-width model input."""
     return [1.0 if label == token else 0.0 for token in labels]
+
+
+def try_cast_vector(value: object) -> Optional[List[float]]:
+    """Try converting a list-like value to a float vector."""
+    if isinstance(value, np.ndarray):
+        return [float(item) for item in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        try:
+            return [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def resolve_column_name(df: pd.DataFrame, candidates: Sequence[str]) -> Optional[str]:
+    """Resolve a column name from candidate spellings in a case-insensitive way."""
+    lowered = {str(column).strip().lower(): str(column) for column in df.columns}
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+        resolved = lowered.get(candidate.strip().lower())
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def get_series_by_candidates(df: pd.DataFrame, candidates: Sequence[str]) -> pd.Series:
+    """Return a cleaned string series for the first matching column, else empty strings."""
+    column = resolve_column_name(df, candidates)
+    if column is None:
+        return pd.Series([""] * len(df), index=df.index, dtype="object")
+    return df[column].fillna("").astype(str).str.strip()
+
+
+def extract_bug_id_number(raw: str) -> int:
+    """Extract numeric suffix from IDs like LUCENE-123; returns 0 if absent."""
+    text = str(raw).strip()
+    if not text:
+        return 0
+
+    match = re.search(r"(\d+)$", text)
+    if not match:
+        match = re.search(r"(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def normalize_priority_from_fields(priority_name: str, priority_id: str) -> str:
+    """Normalize priority using Priority Name and Priority Id values from issue CSVs."""
+    name = str(priority_name).strip().lower()
+    id_text = str(priority_id).strip()
+
+    name_map = {
+        "highest": "critical",
+        "blocker": "critical",
+        "critical": "critical",
+        "high": "high",
+        "major": "high",
+        "medium": "medium",
+        "normal": "medium",
+        "low": "low",
+        "minor": "low",
+        "trivial": "low",
+        "lowest": "low",
+    }
+    if name in name_map:
+        return name_map[name]
+
+    id_map = {1: "critical", 2: "high", 3: "medium", 4: "low", 5: "low"}
+
+    numeric_name: Optional[int] = None
+    if name.isdigit():
+        numeric_name = int(name)
+    if numeric_name in id_map:
+        return id_map[numeric_name]
+
+    try:
+        numeric_id = int(float(id_text))
+    except ValueError:
+        numeric_id = -1
+    if numeric_id in id_map:
+        return id_map[numeric_id]
+
+    return "unknown"
+
+
+def build_first_seen_id_map(values: Sequence[str]) -> Dict[str, int]:
+    """Create deterministic IDs by first appearance. Zero is reserved for empty values."""
+    mapping: Dict[str, int] = {}
+    next_id = 1
+
+    for raw_value in values:
+        normalized = str(raw_value).strip().lower()
+        if not normalized:
+            continue
+        if normalized not in mapping:
+            mapping[normalized] = next_id
+            next_id += 1
+
+    return mapping
+
+
+def encode_context_value(raw_value: str, mapping: Dict[str, int]) -> int:
+    normalized = str(raw_value).strip().lower()
+    if not normalized:
+        return 0
+    return mapping.get(normalized, 0)
+
+
+def has_requested_source_columns(df: pd.DataFrame) -> bool:
+    """Check whether the dataframe can be converted to the 4-feature CSV format."""
+    has_textual = resolve_column_name(df, DESCRIPTION_COLUMN_CANDIDATES) is not None
+    has_categorical = (
+        resolve_column_name(df, PRIORITY_NAME_COLUMN_CANDIDATES) is not None
+        or resolve_column_name(df, PRIORITY_ID_COLUMN_CANDIDATES) is not None
+    )
+    has_temporal = (
+        resolve_column_name(df, BUG_CREATION_DATE_COLUMN_CANDIDATES) is not None
+        and resolve_column_name(df, BUG_ID_COLUMN_CANDIDATES) is not None
+    )
+    has_contextual = any(
+        resolve_column_name(df, candidates) is not None
+        for candidates in [
+            ASSIGNED_TO_COLUMN_CANDIDATES,
+            FIX_VERSION_COLUMN_CANDIDATES,
+            COMPONENTS_COLUMN_CANDIDATES,
+        ]
+    )
+    return has_textual and has_categorical and has_temporal and has_contextual
+
+
+def build_four_feature_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a 4-feature dataset from tabular issue fields.
+
+    Mapping used:
+    - textual_features: Description
+    - categorical_features: Priority Name, Priority Id
+    - temporal_features: Bug Creation Date, Bug Id
+    - contextual_features: Assigned To, Fix Version, Components
+    """
+    bug_ids = get_series_by_candidates(df, BUG_ID_COLUMN_CANDIDATES)
+    descriptions = get_series_by_candidates(df, DESCRIPTION_COLUMN_CANDIDATES)
+    priority_names = get_series_by_candidates(df, PRIORITY_NAME_COLUMN_CANDIDATES)
+    priority_ids = get_series_by_candidates(df, PRIORITY_ID_COLUMN_CANDIDATES)
+    bug_creation_dates = get_series_by_candidates(df, BUG_CREATION_DATE_COLUMN_CANDIDATES)
+    assigned_to = get_series_by_candidates(df, ASSIGNED_TO_COLUMN_CANDIDATES)
+    fix_versions = get_series_by_candidates(df, FIX_VERSION_COLUMN_CANDIDATES)
+    components = get_series_by_candidates(df, COMPONENTS_COLUMN_CANDIDATES)
+    resolutions = get_series_by_candidates(df, RESOLUTION_COLUMN_CANDIDATES)
+
+    component_id_map = build_first_seen_id_map(components.tolist())
+    assigned_to_id_map = build_first_seen_id_map(assigned_to.tolist())
+    fix_version_id_map = build_first_seen_id_map(fix_versions.tolist())
+
+    lucene1_datetime: Optional[datetime] = None
+    for index in range(len(df)):
+        bug_id_value = str(bug_ids.iat[index]).strip().lower()
+        if bug_id_value == "lucene-1":
+            lucene1_datetime = parse_datetime(str(bug_creation_dates.iat[index]))
+            break
+
+    if lucene1_datetime is None:
+        for raw_created in bug_creation_dates.tolist():
+            parsed = parse_datetime(str(raw_created))
+            if parsed is not None:
+                lucene1_datetime = parsed
+                break
+
+    report_ids: List[str] = []
+    categorical_payloads: List[str] = []
+    temporal_payloads: List[str] = []
+    contextual_features: List[str] = []
+
+    for index in range(len(df)):
+        bug_id_value = bug_ids.iat[index]
+        report_ids.append(bug_id_value if bug_id_value else f"report-{index + 1}")
+
+        priority_label = normalize_priority_from_fields(priority_names.iat[index], priority_ids.iat[index])
+        categorical_payload = {
+            "priority_name": priority_names.iat[index],
+            "priority_id": priority_ids.iat[index],
+            "priority": priority_label,
+            "vector": (
+                one_hot(priority_label, PRIORITY_LABELS)
+                + one_hot("unknown", SEVERITY_LABELS)
+                + one_hot("unknown", TYPE_LABELS)
+                + one_hot("unknown", COMPONENT_LABELS)
+            ),
+        }
+        categorical_payloads.append(json.dumps(categorical_payload, ensure_ascii=True))
+
+        bug_id_number = extract_bug_id_number(bug_id_value)
+        created_raw = bug_creation_dates.iat[index]
+        created_dt = parse_datetime(str(created_raw))
+        epoch_start = datetime(1970, 1, 1)
+        days_since_epoch = 0.0
+        gap_from_lucene1_hours = 0.0
+        if created_dt is not None:
+            days_since_epoch = float((created_dt - epoch_start).days)
+            if lucene1_datetime is not None:
+                gap_from_lucene1_hours = float((created_dt - lucene1_datetime).total_seconds() / 3600.0)
+
+        temporal_payload = {
+            "created_raw": created_raw,
+            "bug_id": bug_id_value,
+            "bug_id_numeric": bug_id_number,
+            "created_days_since_epoch": days_since_epoch,
+            "gap_from_lucene1_hours": gap_from_lucene1_hours,
+        }
+        temporal_payloads.append(json.dumps(temporal_payload, ensure_ascii=True))
+
+        assigned_to_value = assigned_to.iat[index]
+        fix_version_value = fix_versions.iat[index]
+        component_value = components.iat[index]
+
+        contextual_payload = {
+            "assigned_to": assigned_to_value,
+            "assigned_to_id": encode_context_value(assigned_to_value, assigned_to_id_map),
+            "fix_version": fix_version_value,
+            "fix_version_id": encode_context_value(fix_version_value, fix_version_id_map),
+            "components": component_value,
+            "components_id": encode_context_value(component_value, component_id_map),
+        }
+        contextual_features.append(
+            json.dumps(contextual_payload, ensure_ascii=True)
+        )
+
+    feature_df = pd.DataFrame(
+        {
+            "report_id": report_ids,
+            "textual_features": descriptions,
+            "categorical_features": categorical_payloads,
+            "temporal_features": temporal_payloads,
+            "contextual_features": contextual_features,
+        }
+    )
+
+    if (resolutions.str.len() > 0).any():
+        feature_df["Resolution"] = resolutions
+
+    return feature_df
 
 
 def infer_priority(text: str) -> str:
@@ -168,10 +448,10 @@ def infer_component(text: str) -> str:
     return "unknown"
 
 
-def infer_weak_duplicate_label(text: str) -> int:
+def infer_weak_report_label(text: str) -> int:
     """
-    Build weak supervision labels if the dataset has no explicit target column.
-    1 => duplicate report, 0 => non-duplicate.
+    Weak label fallback used when no explicit target column is available.
+    Returns class IDs for Duplicate/Non-duplicate.
     """
     patterns = [
         r"\bduplicate of\b",
@@ -182,7 +462,9 @@ def infer_weak_duplicate_label(text: str) -> int:
         r"\bresolved as duplicate\b",
     ]
     lower = text.lower()
-    return int(any(re.search(pattern, lower) for pattern in patterns))
+    if any(re.search(pattern, lower) for pattern in patterns):
+        return REPORT_LABEL_TO_ID["duplicate"]
+    return REPORT_LABEL_TO_ID["non_duplicate"]
 
 
 def parse_datetime(raw: str) -> Optional[datetime]:
@@ -221,9 +503,20 @@ def parse_datetime(raw: str) -> Optional[datetime]:
         )
 
     # Format from Jira-like exports (e.g., 29/May/2023 6:43 AM)
-    for fmt in ["%d/%b/%Y %I:%M %p", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S"]:
+    for fmt in [
+        "%d/%b/%Y %I:%M %p",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+    ]:
         try:
-            return datetime.strptime(clean, fmt)
+            parsed = datetime.strptime(clean, fmt)
+            if parsed.tzinfo is not None:
+                parsed = parsed.replace(tzinfo=None)
+            return parsed
         except ValueError:
             continue
     return None
@@ -231,46 +524,63 @@ def parse_datetime(raw: str) -> Optional[datetime]:
 
 def build_temporal_vector(row: pd.Series) -> List[float]:
     """
-    Convert time values into a numeric vector.
-    Uses cyclic encoding for calendar/time features to preserve periodicity.
+    Build temporal vector with date math:
+    1) days since Unix epoch
+    2) gap from LUCENE-1 creation time in hours
     """
+    precomputed_vector = try_cast_vector(row.get("temporal_vector", None))
+    if precomputed_vector is not None:
+        return precomputed_vector
+
     payload = safe_json_load(row.get("temporal_features", ""))
+    if payload:
+        days_value = payload.get("created_days_since_epoch")
+        gap_value = payload.get("gap_from_lucene1_hours")
+        if days_value is not None and gap_value is not None:
+            try:
+                return [float(days_value), float(gap_value)]
+            except (TypeError, ValueError):
+                pass
+
     created_raw = str(payload.get("created_raw", "")) if payload else ""
+    if not created_raw and "Bug Creation Date" in row:
+        created_raw = str(row.get("Bug Creation Date", ""))
     if not created_raw and "Created" in row:
         created_raw = str(row.get("Created", ""))
 
-    dt = parse_datetime(created_raw)
-    if dt is None:
-        return [0.0] * 9
+    created_dt = parse_datetime(created_raw)
+    if created_dt is None:
+        return [0.0, 0.0]
 
-    year_scaled = (dt.year - 1990) / 50.0
-    month_angle = 2.0 * math.pi * dt.month / 12.0
-    weekday_angle = 2.0 * math.pi * dt.weekday() / 7.0
-    hour_angle = 2.0 * math.pi * dt.hour / 24.0
-    return [
-        year_scaled,
-        math.sin(month_angle),
-        math.cos(month_angle),
-        math.sin(weekday_angle),
-        math.cos(weekday_angle),
-        math.sin(hour_angle),
-        math.cos(hour_angle),
-        dt.minute / 59.0,
-        float(dt.weekday() >= 5),
-    ]
+    epoch_start = datetime(1970, 1, 1)
+    days_since_epoch = float((created_dt - epoch_start).days)
+
+    lucene1_raw = str(payload.get("lucene1_created_raw", "")) if payload else ""
+    lucene1_dt = parse_datetime(lucene1_raw) if lucene1_raw else None
+    gap_hours = float((created_dt - lucene1_dt).total_seconds() / 3600.0) if lucene1_dt else 0.0
+    return [days_since_epoch, gap_hours]
 
 
 def build_categorical_vector(row: pd.Series, fallback_text: str) -> List[float]:
     """Build a fixed-width categorical vector from JSON features or fallback heuristics."""
+    precomputed_vector = try_cast_vector(row.get("categorical_vector", None))
+    if precomputed_vector is not None:
+        return precomputed_vector
+
     payload = safe_json_load(row.get("categorical_features", ""))
     vector_obj = payload.get("vector") if payload else None
     if isinstance(vector_obj, list):
         return [float(value) for value in vector_obj]
 
     priority = str(payload.get("priority", "")) if payload else ""
+    priority_name = str(payload.get("priority_name", "")) if payload else ""
+    priority_id = str(payload.get("priority_id", "")) if payload else ""
     severity = str(payload.get("severity", "")) if payload else ""
     issue_type = str(payload.get("issue_type", "")) if payload else ""
     component = str(payload.get("component", "")) if payload else ""
+
+    if not priority and (priority_name or priority_id):
+        priority = normalize_priority_from_fields(priority_name, priority_id)
 
     # Fall back to paper-inspired categorical extraction when structured fields are missing.
     merged = " ".join(
@@ -302,30 +612,55 @@ def build_categorical_vector(row: pd.Series, fallback_text: str) -> List[float]:
 
 def build_contextual_vector(row: pd.Series) -> List[float]:
     """
-    Extract context cues from logs/code snippets/error traces.
-    This keeps the contextual branch compact and robust.
+    Context branch with categorical ID encodings:
+    [components_id, assigned_to_id, fix_version_id]
     """
+    precomputed_vector = try_cast_vector(row.get("contextual_vector", None))
+    if precomputed_vector is not None:
+        return precomputed_vector
+
+    payload = safe_json_load(row.get("contextual_features", ""))
+    if payload:
+        try:
+            components_id = float(payload.get("components_id", payload.get("component_id", 0)) or 0)
+            assigned_to_id = float(payload.get("assigned_to_id", 0) or 0)
+            fix_version_id = float(payload.get("fix_version_id", 0) or 0)
+            return [components_id, assigned_to_id, fix_version_id]
+        except (TypeError, ValueError):
+            pass
+
+    contextual_text = str(row.get("contextual_features", "")).strip().lower()
+    if contextual_text:
+        component_present = bool(re.search(r"components\s*:\s*[^|\s]", contextual_text))
+        assigned_present = bool(re.search(r"assigned_to\s*:\s*[^|\s]", contextual_text))
+        fix_present = bool(re.search(r"fix_version\s*:\s*[^|\s]", contextual_text))
+        return [float(component_present), float(assigned_present), float(fix_present)]
+
+    component_raw = str(row.get("Components", row.get("Component/s", ""))).strip()
+    assigned_raw = str(row.get("Assigned To", "")).strip()
+    fix_raw = str(row.get("Fix Version", "")).strip()
+    return [float(bool(component_raw)), float(bool(assigned_raw)), float(bool(fix_raw))]
+
+
+def build_contextual_plain_text(row: pd.Series) -> str:
+    """Build human-readable contextual text without raw JSON syntax."""
+    payload = safe_json_load(row.get("contextual_features", ""))
+    if payload:
+        parts: List[str] = []
+        for key in ["assigned_to", "fix_version", "components"]:
+            value = str(payload.get(key, "")).strip()
+            if value:
+                parts.append(value)
+        return " ".join(parts)
+
     contextual_text = str(row.get("contextual_features", "")).strip()
-    if not contextual_text:
-        contextual_text = str(row.get("Description", "")).strip()
-    lower = contextual_text.lower()
+    if contextual_text:
+        return contextual_text
 
-    has_stack_trace = bool(re.search(r"\b(stack trace|traceback|call stack)\b", lower))
-    has_error = bool(re.search(r"\b(error|exception|fatal|assert|segmentation fault|sigsegv)\b", lower))
-    has_code = bool(
-        re.search(r"\b0x[0-9a-f]{5,}\b", lower)
-        or re.search(r"\b[A-Za-z_][\w\-.]*\.(c|cc|cpp|h|hpp|java|js|py|cs|go)\b", contextual_text)
-        or re.search(r"[{}();]", contextual_text)
-    )
-    context_token_count = len(tokenize_text(contextual_text))
-    normalized_length = min(context_token_count / 300.0, 1.0)
-
-    return [
-        float(has_stack_trace),
-        float(has_error),
-        float(has_code),
-        normalized_length,
-    ]
+    component_raw = str(row.get("Components", row.get("Component/s", ""))).strip()
+    assigned_raw = str(row.get("Assigned To", "")).strip()
+    fix_raw = str(row.get("Fix Version", "")).strip()
+    return " ".join(part for part in [assigned_raw, fix_raw, component_raw] if part)
 
 
 @dataclass
@@ -385,6 +720,21 @@ def load_modeling_dataframe(data_path: Path) -> pd.DataFrame:
     """Load CSV and adapt columns so ADLM can be trained from multiple formats."""
     df = pd.read_csv(data_path)
     df = df.copy()
+    df.columns = [str(column).strip() for column in df.columns]
+
+    required_feature_columns = {
+        "textual_features",
+        "categorical_features",
+        "temporal_features",
+        "contextual_features",
+    }
+    if not required_feature_columns.issubset(set(df.columns)) and has_requested_source_columns(df):
+        feature_df = build_four_feature_dataframe(df)
+        output_path = data_path.with_name(f"{data_path.stem}_4features.csv")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        feature_df.to_csv(output_path, index=False)
+        LOGGER.info("Saved 4-feature CSV to: %s", output_path)
+        df = feature_df
 
     # If the file is the converted corpus output, these columns already exist.
     if "textual_features" not in df.columns:
@@ -395,39 +745,203 @@ def load_modeling_dataframe(data_path: Path) -> pd.DataFrame:
     if "contextual_features" not in df.columns:
         df["contextual_features"] = df.get("Description", pd.Series([""] * len(df))).fillna("")
 
+    # Enforce punctuation/stopword cleanup at data preparation time.
+    df["textual_features"] = df["textual_features"].fillna("").astype(str).map(normalize_text_for_training)
+
+    # Materialize vectors once so training uses parsed numeric inputs, not raw JSON text from CSV.
+    df["contextual_text_plain"] = df.apply(build_contextual_plain_text, axis=1)
+    df["contextual_text_plain"] = df["contextual_text_plain"].fillna("").astype(str).map(normalize_text_for_training)
+    df["temporal_vector"] = df.apply(build_temporal_vector, axis=1)
+    df["contextual_vector"] = df.apply(build_contextual_vector, axis=1)
+    df["categorical_vector"] = df.apply(
+        lambda row: build_categorical_vector(
+            row,
+            str(row.get("textual_features", "")).strip() + " " + str(row.get("contextual_text_plain", "")).strip(),
+        ),
+        axis=1,
+    )
+
     return df
+
+
+def resolve_training_data_paths(
+    data_paths: Optional[Sequence[Path]],
+    data_path: Optional[Path],
+) -> List[Path]:
+    """Resolve input paths from explicit CLI dataset args."""
+    if data_paths:
+        return [Path(path) for path in data_paths]
+    if data_path is not None:
+        return [Path(data_path)]
+    raise ValueError(
+        "No dataset path provided. Use --data_path <csv> or --data_paths <csv1> [<csv2> ...]."
+    )
+
+
+def derive_binary_label(row: pd.Series, label_column: Optional[str]) -> int:
+    """Create a binary label from explicit labels when available, else weak supervision."""
+    text = str(row.get("textual_features", "")).strip()
+    contextual_text = str(row.get("contextual_text_plain", "")).strip()
+    if not contextual_text:
+        contextual_text = str(row.get("contextual_features", "")).strip()
+    merged_text = (text + " " + contextual_text).strip()
+
+    if label_column:
+        explicit_label = normalize_label(row.get(label_column), merged_text)
+        if explicit_label is not None:
+            return explicit_label
+
+    return infer_weak_report_label(merged_text)
+
+
+def balance_binary_dataframe(df: pd.DataFrame, label_column: str, seed: int) -> pd.DataFrame:
+    """Down-sample to equal Duplicate/Non-duplicate counts."""
+    counts = df[label_column].value_counts()
+    if len(counts) < len(REPORT_LABELS):
+        raise ValueError("Both Duplicate and Non-duplicate classes are required for balancing.")
+
+    target_size = int(counts.min())
+    balanced_parts: List[pd.DataFrame] = []
+    for class_id in range(len(REPORT_LABELS)):
+        class_rows = df[df[label_column] == class_id]
+        if class_rows.empty:
+            raise ValueError("Both Duplicate and Non-duplicate classes are required for balancing.")
+        balanced_parts.append(class_rows.sample(n=target_size, random_state=seed))
+
+    balanced = pd.concat(balanced_parts, ignore_index=True)
+    balanced = balanced.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    return balanced
+
+
+def prepare_training_dataframe(
+    data_paths: Sequence[Path],
+    explicit_label_column: Optional[str],
+    seed: int,
+) -> pd.DataFrame:
+    """Load, normalize, and balance one or more datasets into a binary training frame."""
+    prepared_frames: List[pd.DataFrame] = []
+
+    for data_path in data_paths:
+        if not data_path.exists():
+            raise FileNotFoundError(f"Dataset file not found: {data_path}")
+
+        frame = load_modeling_dataframe(data_path)
+        resolved_label_column = detect_label_column(frame, explicit_label_column)
+        frame = frame.copy()
+        frame["dataset_source"] = data_path.stem
+        frame["binary_label"] = frame.apply(
+            lambda row: derive_binary_label(row, resolved_label_column),
+            axis=1,
+        )
+
+        LOGGER.info(
+            "Prepared dataset: %s | rows=%d | label_source=%s",
+            data_path,
+            len(frame),
+            resolved_label_column if resolved_label_column else "weak_supervision",
+        )
+        prepared_frames.append(frame)
+
+    if not prepared_frames:
+        raise ValueError("No datasets were prepared.")
+
+    combined = pd.concat(prepared_frames, ignore_index=True)
+    combined = combined[combined["textual_features"].str.len() > 0].copy()
+    combined["binary_label"] = combined["binary_label"].astype(int)
+
+    balanced = balance_binary_dataframe(combined, label_column="binary_label", seed=seed)
+    counts = balanced["binary_label"].value_counts().to_dict()
+    LOGGER.info(
+        "Balanced samples: %s",
+        {
+            "non_duplicate": int(counts.get(REPORT_LABEL_TO_ID["non_duplicate"], 0)),
+            "duplicate": int(counts.get(REPORT_LABEL_TO_ID["duplicate"], 0)),
+        },
+    )
+    return balanced
 
 
 def detect_label_column(df: pd.DataFrame, explicit_label_column: Optional[str]) -> Optional[str]:
     """Resolve the supervision column if it exists in the dataset."""
-    if explicit_label_column and explicit_label_column in df.columns:
-        return explicit_label_column
-    for candidate in LABEL_COLUMN_CANDIDATES:
-        if candidate in df.columns:
-            return candidate
+    lowered = {str(column).strip().lower(): str(column) for column in df.columns}
+    if explicit_label_column:
+        if explicit_label_column in df.columns:
+            return explicit_label_column
+        explicit_match = lowered.get(explicit_label_column.strip().lower())
+        if explicit_match is not None:
+            return explicit_match
+
+    for candidate in LABEL_COLUMN_CANDIDATES + ["resolution"]:
+        match = lowered.get(candidate.strip().lower())
+        if match is not None:
+            return match
     return None
 
 
-def normalize_label(value: object) -> Optional[int]:
-    """Normalize labels from numeric/string columns into 0/1."""
+def normalize_label(value: object, fallback_text: str = "") -> Optional[int]:
+    """Normalize labels into class IDs for Duplicate/Non-duplicate."""
     if value is None:
         return None
     if isinstance(value, (float, np.floating)) and math.isnan(float(value)):
         return None
     if isinstance(value, (int, float)):
-        return int(float(value) > 0)
+        numeric_value = int(float(value))
+        if numeric_value == 1:
+            return REPORT_LABEL_TO_ID["duplicate"]
+        if numeric_value in (0, 2):
+            return REPORT_LABEL_TO_ID["non_duplicate"]
+        return None
 
     text = str(value).strip().lower()
-    truthy = {"1", "true", "yes", "duplicate", "dup", "y"}
-    falsy = {"0", "false", "no", "non-duplicate", "not duplicate", "n"}
-    if text in truthy:
-        return 1
-    if text in falsy:
-        return 0
+    duplicate_tokens = {
+        "duplicate",
+        "dup",
+        "is duplicate",
+        "yes",
+        "true",
+    }
+    non_duplicate_tokens = {
+        "non duplicate",
+        "not duplicate",
+        "nonduplicate",
+        "bug",
+        "enhancement",
+        "feature",
+        "feature request",
+        "improvement",
+        "bug",
+        "fixed",
+        "wont fix",
+        "won't fix",
+        "incomplete",
+        "cannot reproduce",
+        "invalid",
+        "not a problem",
+        "works for me",
+        "done",
+        "closed",
+        "resolved",
+        "no",
+        "false",
+    }
 
-    # Last fallback for labels like "Severity 3 - Minor" etc.
-    if text.isdigit():
-        return int(int(text) > 0)
+    normalized_text = re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+    if "not duplicate" in normalized_text or "non duplicate" in normalized_text:
+        return REPORT_LABEL_TO_ID["non_duplicate"]
+
+    if text in duplicate_tokens or normalized_text in duplicate_tokens:
+        return REPORT_LABEL_TO_ID["duplicate"]
+    if text in non_duplicate_tokens or normalized_text in non_duplicate_tokens:
+        return REPORT_LABEL_TO_ID["non_duplicate"]
+    if "duplicate" in normalized_text:
+        return REPORT_LABEL_TO_ID["duplicate"]
+    if "enhancement" in normalized_text or "feature" in normalized_text:
+        return REPORT_LABEL_TO_ID["non_duplicate"]
+
+    if fallback_text:
+        return infer_weak_report_label(fallback_text)
+
     return None
 
 
@@ -443,20 +957,23 @@ def build_examples(df: pd.DataFrame, label_column: Optional[str]) -> List[BugExa
         if not text:
             continue
 
-        contextual_text = str(row.get("contextual_features", ""))
+        contextual_text = str(row.get("contextual_text_plain", "")).strip()
+        if not contextual_text:
+            contextual_text = str(row.get("contextual_features", "")).strip()
+        merged_text = text + " " + contextual_text
         label: Optional[int] = None
         if label_column:
-            label = normalize_label(row.get(label_column))
+            label = normalize_label(row.get(label_column), merged_text)
 
         if label is None:
             # Weak supervision fallback keeps the training script runnable on unlabeled corpora.
-            label = infer_weak_duplicate_label(text + " " + contextual_text)
+            label = infer_weak_report_label(merged_text)
 
         examples.append(
             BugExample(
                 text=text,
                 temporal_vector=build_temporal_vector(row),
-                categorical_vector=build_categorical_vector(row, text + " " + contextual_text),
+                categorical_vector=build_categorical_vector(row, merged_text),
                 contextual_vector=build_contextual_vector(row),
                 label=int(label),
             )
@@ -517,39 +1034,41 @@ class ADLMBiLSTMCRF(nn.Module):
         temporal_dim: int,
         categorical_dim: int,
         contextual_dim: int,
-        num_labels: int = 2,
+        num_labels: int = len(REPORT_LABELS),
         crf_regularization: float = 1e-4,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.num_labels = num_labels
         self.crf_regularization = crf_regularization
+        self.bidirectional = False
+        self.text_output_dim = hidden_size * (2 if self.bidirectional else 1)
 
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.text_encoder = nn.LSTM(
             input_size=embedding_dim,
             hidden_size=hidden_size,
             batch_first=True,
-            bidirectional=True,
+            bidirectional=self.bidirectional,
         )
         self.dropout = nn.Dropout(dropout)
 
         side_input_dim = temporal_dim + categorical_dim + contextual_dim
         # Side-channel MLP aligns feature scales before fusion with token states.
         self.side_encoder = nn.Sequential(
-            nn.Linear(max(1, side_input_dim), hidden_size * 2),
+            nn.Linear(max(1, side_input_dim), self.text_output_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * 2, hidden_size * 2),
+            nn.Linear(self.text_output_dim, self.text_output_dim),
             nn.ReLU(),
         )
 
         # Fusion head maps [text_state || side_state] -> token emissions for CRF.
         self.emission_head = nn.Sequential(
-            nn.Linear(hidden_size * 4, hidden_size * 2),
+            nn.Linear(self.text_output_dim * 2, self.text_output_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * 2, num_labels),
+            nn.Linear(self.text_output_dim, num_labels),
         )
 
         self.crf = CRF(num_labels, pad_idx=None, use_gpu=torch.cuda.is_available())
@@ -562,15 +1081,39 @@ class ADLMBiLSTMCRF(nn.Module):
 
     @staticmethod
     def token_tags_to_report_labels(tag_sequences: List[List[int]]) -> List[int]:
-        """Collapse token predictions into one report-level duplicate decision."""
+        """Collapse token predictions into one report-level class decision."""
         predictions: List[int] = []
         for tags in tag_sequences:
             if not tags:
-                predictions.append(0)
+                predictions.append(REPORT_LABEL_TO_ID["non_duplicate"])
                 continue
-            positive_ratio = float(sum(tags)) / float(len(tags))
-            predictions.append(int(positive_ratio >= 0.5))
+            counts = Counter(tags)
+            prediction = max(counts.items(), key=lambda item: item[1])[0]
+            predictions.append(int(prediction))
         return predictions
+
+    @staticmethod
+    def class_probabilities_to_report_labels(class_probabilities: torch.Tensor) -> List[int]:
+        """Convert per-class probabilities into report-level class IDs."""
+        if class_probabilities.ndim != 2:
+            return []
+        return class_probabilities.argmax(dim=1).detach().cpu().tolist()
+
+    def _compute_class_probabilities(self, emissions: torch.Tensor, mask: torch.BoolTensor) -> torch.Tensor:
+        """Estimate P(class) with CRF log-likelihood for constant-label report sequences."""
+        log_likelihoods: List[torch.Tensor] = []
+        for class_index in range(self.num_labels):
+            tags = torch.full(
+                emissions.shape[:2],
+                fill_value=class_index,
+                dtype=torch.long,
+                device=emissions.device,
+            )
+            class_log_likelihood = self.crf(emissions, tags, mask)
+            log_likelihoods.append(class_log_likelihood.unsqueeze(1))
+
+        stacked = torch.cat(log_likelihoods, dim=1)
+        return torch.softmax(stacked, dim=1)
 
     def forward(
         self,
@@ -600,10 +1143,12 @@ class ADLMBiLSTMCRF(nn.Module):
 
         crf_mask = cast(torch.BoolTensor, attention_mask.bool())
         decoded_tags = self.crf.viterbi_decode(emissions, crf_mask)
+        class_probabilities = self._compute_class_probabilities(emissions, crf_mask)
 
         output: Dict[str, object] = {
             "decoded_tags": decoded_tags,
             "emissions": emissions,
+            "class_probabilities": class_probabilities,
         }
 
         if tags is not None:
@@ -621,7 +1166,11 @@ class ADLMBiLSTMCRF(nn.Module):
 
 @dataclass
 class TrainConfig:
-    data_path: Path
+    data_paths: List[Path]
+    prepared_data_out: Path
+    start_training: bool
+    log_level: str
+    log_file: Optional[Path]
     model_out: Path
     label_column: Optional[str]
     max_vocab_size: int
@@ -752,7 +1301,8 @@ def compute_metrics(targets: List[int], predictions: List[int]) -> Dict[str, flo
     precision, recall, f1, _ = precision_recall_fscore_support(
         targets,
         predictions,
-        average="binary",
+        labels=list(range(len(REPORT_LABELS))),
+        average="macro",
         zero_division=0,
     )
     kappa = cohen_kappa_score(targets, predictions)
@@ -828,8 +1378,8 @@ def evaluate(
             if "loss" in output:
                 losses.append(float(output["loss"].detach().cpu().item()))
 
-            decoded = output["decoded_tags"]
-            batch_predictions = ADLMBiLSTMCRF.token_tags_to_report_labels(decoded)
+            class_probabilities = cast(torch.Tensor, output["class_probabilities"])
+            batch_predictions = ADLMBiLSTMCRF.class_probabilities_to_report_labels(class_probabilities)
             batch_targets = batch["label"].detach().cpu().tolist()
 
             predictions.extend(batch_predictions)
@@ -886,10 +1436,25 @@ def build_dataloaders(
 
 
 def run_training(config: TrainConfig) -> None:
+    configure_logging(config.log_level, config.log_file)
     set_seed(config.seed)
 
-    dataframe = load_modeling_dataframe(config.data_path)
-    label_column = detect_label_column(dataframe, config.label_column)
+    LOGGER.info("Using datasets: %s", [str(path) for path in config.data_paths])
+    dataframe = prepare_training_dataframe(
+        data_paths=config.data_paths,
+        explicit_label_column=config.label_column,
+        seed=config.seed,
+    )
+
+    config.prepared_data_out.parent.mkdir(parents=True, exist_ok=True)
+    dataframe.to_csv(config.prepared_data_out, index=False)
+    LOGGER.info("Saved prepared balanced dataset to: %s", config.prepared_data_out)
+
+    if not config.start_training:
+        LOGGER.info("Preparation complete. Stopping before training. Pass --start_training to run training.")
+        return
+
+    label_column = "binary_label"
     examples = build_examples(dataframe, label_column=label_column)
     if len(examples) < 10:
         raise ValueError("Not enough valid training examples found in the dataset.")
@@ -923,6 +1488,7 @@ def run_training(config: TrainConfig) -> None:
             temporal_dim=train_dataset.temporal_dim,
             categorical_dim=train_dataset.categorical_dim,
             contextual_dim=train_dataset.contextual_dim,
+            num_labels=len(REPORT_LABELS),
             crf_regularization=crf_reg,
         )
         return model.to(device)
@@ -962,8 +1528,8 @@ def run_training(config: TrainConfig) -> None:
             chosen_hidden = best_candidate.hidden_size
             chosen_dropout = best_candidate.dropout
             chosen_crf_reg = best_candidate.crf_regularization
-            print(
-                "[Dragonfly] best candidate:",
+            LOGGER.info(
+                "[Dragonfly] best candidate: %s",
                 {
                     "learning_rate": chosen_lr,
                     "hidden_size": chosen_hidden,
@@ -980,6 +1546,7 @@ def run_training(config: TrainConfig) -> None:
             temporal_dim=train_dataset.temporal_dim,
             categorical_dim=train_dataset.categorical_dim,
             contextual_dim=train_dataset.contextual_dim,
+            num_labels=len(REPORT_LABELS),
             crf_regularization=chosen_crf_reg,
         ).to(device)
 
@@ -990,15 +1557,17 @@ def run_training(config: TrainConfig) -> None:
             val_metrics = evaluate(final_model, val_loader, device)
             last_completed_epoch = epoch
 
-            print(
-                f"Epoch {epoch:02d} | "
-                f"train_loss={train_loss:.4f} | "
-                f"val_loss={val_metrics['loss']:.4f} | "
-                f"val_acc={val_metrics['accuracy']:.4f} | "
-                f"val_precision={val_metrics['precision']:.4f} | "
-                f"val_recall={val_metrics['recall']:.4f} | "
-                f"val_f1={val_metrics['f1']:.4f} | "
-                f"val_kappa={val_metrics['kappa']:.4f}"
+            LOGGER.info(
+                "Epoch %02d | train_loss=%.4f | val_loss=%.4f | val_acc=%.4f | "
+                "val_precision=%.4f | val_recall=%.4f | val_f1=%.4f | val_kappa=%.4f",
+                epoch,
+                train_loss,
+                val_metrics["loss"],
+                val_metrics["accuracy"],
+                val_metrics["precision"],
+                val_metrics["recall"],
+                val_metrics["f1"],
+                val_metrics["kappa"],
             )
 
             if val_metrics["f1"] > best_f1:
@@ -1008,7 +1577,7 @@ def run_training(config: TrainConfig) -> None:
 
     except KeyboardInterrupt:
         training_status = "interrupted"
-        print("\nKeyboardInterrupt received. Saving checkpoint from current training state...")
+        LOGGER.warning("KeyboardInterrupt received. Saving checkpoint from current training state...")
 
         # If interruption happened very early (e.g., during hyperparameter search),
         # still initialize a model so a valid checkpoint is always produced.
@@ -1021,6 +1590,7 @@ def run_training(config: TrainConfig) -> None:
                 temporal_dim=train_dataset.temporal_dim,
                 categorical_dim=train_dataset.categorical_dim,
                 contextual_dim=train_dataset.contextual_dim,
+                num_labels=len(REPORT_LABELS),
                 crf_regularization=chosen_crf_reg,
             ).to(device)
 
@@ -1058,10 +1628,11 @@ def run_training(config: TrainConfig) -> None:
                 "temporal_dim": train_dataset.temporal_dim,
                 "categorical_dim": train_dataset.categorical_dim,
                 "contextual_dim": train_dataset.contextual_dim,
+                "label_names": REPORT_LABELS,
             },
             "best_metrics": best_metrics,
             "label_column": label_column,
-            "label_mode": "explicit" if label_column else "weak_supervision",
+            "label_mode": "binary_duplicate_vs_non_duplicate",
             "training_status": training_status,
             "last_completed_epoch": last_completed_epoch,
             "epochs_requested": config.epochs,
@@ -1070,10 +1641,10 @@ def run_training(config: TrainConfig) -> None:
     )
 
     if training_status == "interrupted":
-        print("Saved interrupted checkpoint to:", config.model_out)
+        LOGGER.info("Saved interrupted checkpoint to: %s", config.model_out)
     else:
-        print("Saved best model to:", config.model_out)
-    print("Best validation metrics:", best_metrics)
+        LOGGER.info("Saved best model to: %s", config.model_out)
+    LOGGER.info("Best validation metrics: %s", best_metrics)
 
 
 def default_model_output_path() -> Path:
@@ -1086,7 +1657,42 @@ def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(
         description="ADLM-style bug duplicate detection model (BiLSTM + CRF + optional Dragonfly tuning)."
     )
-    parser.add_argument("--data_path", type=Path, default=Path("dataset") / "corpus_features.csv")
+    dataset_group = parser.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument(
+        "--data_paths",
+        type=Path,
+        nargs="+",
+        help="One or more dataset CSV paths to use for this run.",
+    )
+    dataset_group.add_argument(
+        "--data_path",
+        type=Path,
+        help="Single dataset CSV path to use for this run.",
+    )
+    parser.add_argument(
+        "--prepared_data_out",
+        type=Path,
+        default=Path("dataset") / "prepared_binary_balanced.csv",
+        help="Output CSV path for the cleaned + balanced binary dataset.",
+    )
+    parser.add_argument(
+        "--start_training",
+        action="store_true",
+        help="Start training after preparation. If omitted, the script stops after data preparation.",
+    )
+    parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging verbosity level.",
+    )
+    parser.add_argument(
+        "--log_file",
+        type=Path,
+        default=None,
+        help="Optional file path to save logs.",
+    )
     parser.add_argument(
         "--model_out",
         type=Path,
@@ -1100,7 +1706,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--embedding_dim", type=int, default=128)
     parser.add_argument("--hidden_size", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.30)
-    parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--crf_regularization", type=float, default=1e-4)
 
     parser.add_argument("--batch_size", type=int, default=16)
@@ -1113,9 +1719,14 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--dragonfly_inner_epochs", type=int, default=2)
 
     args = parser.parse_args()
+    resolved_data_paths = resolve_training_data_paths(args.data_paths, args.data_path)
     resolved_model_out = args.model_out if args.model_out is not None else default_model_output_path()
     return TrainConfig(
-        data_path=args.data_path,
+        data_paths=resolved_data_paths,
+        prepared_data_out=args.prepared_data_out,
+        start_training=args.start_training,
+        log_level=args.log_level,
+        log_file=args.log_file,
         model_out=resolved_model_out,
         label_column=args.label_column,
         max_vocab_size=args.max_vocab_size,
